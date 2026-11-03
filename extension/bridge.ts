@@ -4,6 +4,8 @@ import { lstat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createServer, connect, type Server, type Socket } from 'node:net';
+import { confirmInstruction } from './confirmation.ts';
+import { redactHistoryEntries } from './context.ts';
 
 const MAX = 1_000_000;
 const validId = (id: string) => /^[a-zA-Z0-9_-]{1,128}$/.test(id);
@@ -174,9 +176,11 @@ export function createBridge(pi: any, ctx: any, directory = runtimeDir) {
           }
           case 'history':
             body = {
-              entries: ctx.sessionManager
-                .getEntries()
-                .slice(-Math.min(200, Math.max(1, Number(q.limit) || 50))),
+              entries: redactHistoryEntries(
+                ctx.sessionManager
+                  .getEntries()
+                  .slice(-Math.min(200, Math.max(1, Number(q.limit) || 50))),
+              ),
             };
             break;
           case 'delivery': {
@@ -184,7 +188,8 @@ export function createBridge(pi: any, ctx: any, directory = runtimeDir) {
               .getEntries()
               .some(
                 (entry: any) =>
-                  entry.message?.details?.requestId === q.requestId,
+                  entry.type === 'custom_message' &&
+                  entry.details?.requestId === q.requestId,
               );
             body = {
               status: found
@@ -200,6 +205,10 @@ export function createBridge(pi: any, ctx: any, directory = runtimeDir) {
               q.message.length > 20_000
             )
               throw new Error('Invalid instruction.');
+            if (!(await confirmInstruction(ctx.ui, sessionId, q.message)))
+              throw new Error(
+                'Instruction not sent: source-side confirmation was rejected or unavailable.',
+              );
             pi.sendMessage(
               {
                 customType: 'pi-operator-instruction',

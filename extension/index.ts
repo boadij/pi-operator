@@ -1,10 +1,14 @@
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
-import { estimateTokens } from '@earendil-works/pi-coding-agent';
+import { DEFAULT_COMPACTION_SETTINGS } from '@earendil-works/pi-coding-agent';
 import { Type } from '@sinclair/typebox';
 import { fileURLToPath } from 'node:url';
 import { createBridge, requestId } from './bridge.ts';
 import { confirmInstruction } from './confirmation.ts';
-import { fitEvidence, serializeEvidence } from './context.ts';
+import {
+  calculateBorrowedContextBudget,
+  fitEvidence,
+  serializeEvidence,
+} from './context.ts';
 import { launch } from './launch.ts';
 
 const ATTACHMENT = 'pi-operator-attachment';
@@ -51,17 +55,26 @@ export default function (pi: ExtensionAPI) {
           attachment!.targetSessionFile,
           { action: 'context' },
         );
-        const reserve = Math.max(2048, context.model?.maxOutputTokens ?? 4096);
-        const operatorTokens = event.messages.reduce(
-          (total: number, message: unknown) =>
-            total + estimateTokens(message as never),
-          0,
+        const activeToolNames = new Set(pi.getActiveTools());
+        const activeTools = pi
+          .getAllTools()
+          .filter((tool) => activeToolNames.has(tool.name))
+          .map(({ name, description, parameters }) => ({
+            name,
+            description,
+            parameters,
+          }));
+        const reserve = Math.max(
+          DEFAULT_COMPACTION_SETTINGS.reserveTokens,
+          Math.min(context.model?.maxTokens ?? 4096, 8192),
         );
-        const budgetTokens =
-          (context.model?.contextWindow ?? 32000) -
-          reserve -
-          operatorTokens -
-          1024;
+        const budgetTokens = calculateBorrowedContextBudget({
+          contextWindow: context.model?.contextWindow ?? 32000,
+          outputReserve: reserve,
+          operatorMessages: event.messages,
+          systemPrompt: context.getSystemPrompt(),
+          tools: activeTools,
+        });
         const text = fitEvidence(
           serializeEvidence({
             sessionId: source.sessionId,

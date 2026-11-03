@@ -6,6 +6,56 @@ export type BorrowedMessage = {
   [key: string]: unknown;
 };
 
+export function calculateBorrowedContextBudget(input: {
+  contextWindow: number;
+  outputReserve: number;
+  operatorMessages: unknown[];
+  systemPrompt: string;
+  tools: unknown[];
+}): number {
+  const message = (text: string) => ({
+    role: 'user',
+    content: [{ type: 'text', text }],
+  });
+  const fixedTokens = estimateTokens(
+    message(`${input.systemPrompt}\n${JSON.stringify(input.tools)}`) as never,
+  );
+  const operatorTokens = input.operatorMessages.reduce<number>(
+    (total, item) => total + estimateTokens(item as never),
+    0,
+  );
+  return (
+    input.contextWindow -
+    input.outputReserve -
+    operatorTokens -
+    fixedTokens -
+    1024
+  );
+}
+
+export function redactSensitiveContent(value: any): any {
+  if (Array.isArray(value)) return value.map(redactSensitiveContent);
+  if (!value || typeof value !== 'object') return value;
+  if (value.type === 'thinking')
+    return { type: 'thinking', text: '[private reasoning omitted]' };
+  if (value.type === 'image')
+    return {
+      type: 'image',
+      mimeType: value.mimeType,
+      text: '[image content unsupported]',
+    };
+  return Object.fromEntries(
+    Object.entries(value).map(([key, child]) => [
+      key,
+      redactSensitiveContent(child),
+    ]),
+  );
+}
+
+export function redactHistoryEntries(entries: unknown[]): unknown[] {
+  return redactSensitiveContent(entries);
+}
+
 export function serializeEvidence(source: {
   sessionId: string;
   messages: BorrowedMessage[];
@@ -13,19 +63,7 @@ export function serializeEvidence(source: {
   compactionSummaries?: string[];
 }): string {
   const lines = source.messages.map((message, index) => {
-    const visible = { ...message };
-    if (Array.isArray(visible.content))
-      visible.content = visible.content.map((part: any) =>
-        part?.type === 'thinking'
-          ? { type: 'thinking', text: '[private reasoning omitted]' }
-          : part?.type === 'image'
-            ? {
-                type: 'image',
-                mimeType: part.mimeType,
-                text: '[image content unsupported]',
-              }
-            : part,
-      );
+    const visible = redactSensitiveContent(message);
     return `[${index + 1}] ${message.role}: ${JSON.stringify(visible)}`;
   });
   const system = source.systemPrompt

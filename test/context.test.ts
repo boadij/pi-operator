@@ -1,8 +1,31 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { fitEvidence, serializeEvidence } from '../extension/context.ts';
+import {
+  calculateBorrowedContextBudget,
+  fitEvidence,
+  serializeEvidence,
+} from '../extension/context.ts';
 
 test('evidence is attributed and stable; oversized evidence has a retrieval notice', () => {
+  const budget = (systemPrompt: string, tools: unknown[]) =>
+    calculateBorrowedContextBudget({
+      contextWindow: 64000,
+      outputReserve: 16000,
+      operatorMessages: [
+        { role: 'user', content: [{ type: 'text', text: 'ask' }] },
+      ],
+      systemPrompt,
+      tools,
+    });
+  assert.ok(
+    budget('long operator system instructions '.repeat(100), []) <
+      budget('', []),
+  );
+  assert.ok(
+    budget('', [{ name: 'tool', parameters: { schema: 'x'.repeat(1000) } }]) <
+      budget('', []),
+  );
+
   const evidence = serializeEvidence({
     sessionId: 'session-1',
     messages: [{ role: 'user', content: 'hello' }],

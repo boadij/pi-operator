@@ -9,5 +9,5 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["extension/**/*.ts", "test/**/*.ts"]
+  "include": ["extension/**/*.ts", "test/**/*.ts", "fixtures/**/*.ts"]
 }
