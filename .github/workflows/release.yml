@@ -1,0 +1,46 @@
+name: Release
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+      - if: ${{ steps.release.outputs.release_created }}
+        uses: actions/checkout@v4
+        with: { ref: '${{ steps.release.outputs.tag_name }}' }
+      - if: ${{ steps.release.outputs.release_created }}
+        uses: actions/setup-node@v4
+        with: { node-version: 22, registry-url: https://registry.npmjs.org }
+      - if: ${{ steps.release.outputs.release_created }}
+        run: npm install --global npm@11.5.1
+      - if: ${{ steps.release.outputs.release_created }}
+        run: npm ci && npm run release:check
+      - if: ${{ steps.release.outputs.release_created }}
+        id: npm-version
+        env:
+          TAG: ${{ steps.release.outputs.tag_name }}
+        run: |
+          version=$(node -p "require('./package.json').version")
+          test "$TAG" = "v$version"
+          test "$(git rev-parse HEAD)" = "$(git rev-list -n1 "$TAG")"
+          if output=$(npm view "pi-operator@$version" version 2>&1); then
+            echo "pi-operator@$version already exists; skipping immutable version publication."
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          elif grep -q 'E404' <<<"$output"; then
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          else
+            printf '%s\n' "$output" >&2
+            exit 1
+          fi
+      - if: ${{ steps.release.outputs.release_created && steps.npm-version.outputs.exists == 'false' }}
+        run: npm publish --provenance --access public

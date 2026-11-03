@@ -1,0 +1,45 @@
+{
+  "name": "pi-operator",
+  "version": "0.0.0",
+  "description": "A separate, attached conversation for a busy Pi session",
+  "type": "module",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/boadij/pi-operator.git"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "operator"
+  ],
+  "pi": {
+    "extensions": [
+      "./extension/index.ts"
+    ]
+  },
+  "files": [
+    "extension",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test",
+    "typecheck": "tsc --noEmit",
+    "format": "prettier . --write",
+    "format:check": "prettier . --check",
+    "validate": "npm run format:check && npm run typecheck && npm test",
+    "release:check": "npm run validate && npm pack --dry-run --json"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^1.5.0",
+    "@sinclair/typebox": "^0.34.0",
+    "@types/node": "^22.0.0",
+    "prettier": "^3.4.0",
+    "typescript": "^5.7.0"
+  }
+}
