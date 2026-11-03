@@ -40,13 +40,14 @@ export function launch(piPath: string, extensionPath: string, target: string) {
     const split = spawnSync(
       'herdr',
       ['pane', 'split', '--current', '--direction', 'right', '--no-focus'],
-      { encoding: 'utf8' },
+      { encoding: 'utf8', timeout: 5000 },
     );
     if (!split.error && split.status === 0) {
       try {
         const paneId = JSON.parse(split.stdout).result.pane.pane_id;
         const run = spawnSync('herdr', ['pane', 'run', paneId, ...argv], {
           stdio: 'ignore',
+          timeout: 5000,
         });
         if (!run.error && run.status === 0)
           return { launched: true, command: argv };
@@ -61,6 +62,7 @@ export function launch(piPath: string, extensionPath: string, target: string) {
       .join(' ');
     const run = spawnSync('tmux', ['split-window', '-d', command], {
       stdio: 'ignore',
+      timeout: 5000,
     });
     if (!run.error && run.status === 0)
       return { launched: true, command: argv };

@@ -31,20 +31,35 @@ export function createBridge(pi: any, ctx: any, directory = runtimeDir) {
           'Operator runtime path must be a directory owned by the current user.',
         );
       await chmod(directory, 0o700);
-      const probe = await new Promise<boolean>((resolve) => {
-        const s = connect(path);
-        s.once('connect', () => {
-          s.destroy();
-          resolve(true);
-        });
-        s.once('error', () => resolve(false));
-        setTimeout(() => {
-          s.destroy();
-          resolve(false);
-        }, 500).unref();
-      });
-      if (probe)
+      const probe = await new Promise<'active' | 'stale' | 'unknown'>(
+        (resolve) => {
+          const s = connect(path);
+          const timer = setTimeout(() => {
+            s.destroy();
+            resolve('unknown');
+          }, 500);
+          s.once('connect', () => {
+            clearTimeout(timer);
+            s.destroy();
+            resolve('active');
+          });
+          s.once('error', (error: NodeJS.ErrnoException) => {
+            clearTimeout(timer);
+            resolve(
+              error.code === 'ECONNREFUSED' || error.code === 'ENOENT'
+                ? 'stale'
+                : 'unknown',
+            );
+          });
+          timer.unref();
+        },
+      );
+      if (probe === 'active')
         throw new Error('An active Operator bridge already owns this session.');
+      if (probe === 'unknown')
+        throw new Error(
+          'Could not determine whether an existing Operator socket is active; refusing to remove it.',
+        );
       const existing = await lstat(path).catch(() => undefined);
       if (
         existing &&
@@ -88,7 +103,7 @@ export function createBridge(pi: any, ctx: any, directory = runtimeDir) {
         }, 3000);
         socket.on('data', (chunk) => {
           data += chunk.toString();
-          if (data.length > MAX) {
+          if (Buffer.byteLength(data) > MAX) {
             socket.destroy();
             reject(new Error('Bridge response too large.'));
           }
@@ -126,7 +141,7 @@ export function createBridge(pi: any, ctx: any, directory = runtimeDir) {
     socket.setTimeout(3000, () => socket.destroy());
     socket.on('data', async (chunk) => {
       data += chunk.toString();
-      if (data.length > MAX) {
+      if (Buffer.byteLength(data) > MAX) {
         socket.end(JSON.stringify({ error: 'Request too large.' }) + '\n');
         return;
       }
