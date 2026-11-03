@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { watch } from 'node:fs';
+import { dirname, basename, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
@@ -21,6 +21,35 @@ const markerSocket = (id: string, home: string) =>
     '.pi/operator',
     `${createHash('sha256').update(id).digest('hex').slice(0, 32)}.sock`,
   );
+
+function waitForFileContent(path: string, expected: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      watcher.close();
+      error ? reject(error) : resolve();
+    };
+    const watcher = watch(dirname(path), (_event, filename) => {
+      if (!filename || filename.toString() === basename(path)) void check();
+    });
+    const timer = setTimeout(
+      () => finish(new Error(`Timed out waiting for ${expected} in ${path}`)),
+      30_000,
+    );
+    watcher.once('error', (error) => finish(error));
+    const check = async () => {
+      try {
+        if ((await readFile(path, 'utf8')).includes(expected)) finish();
+      } catch {
+        // The log may not exist until the faux provider handles its first request.
+      }
+    };
+    void check();
+  });
+}
 
 class RpcPi {
   private child: ChildProcessWithoutNullStreams;
@@ -89,6 +118,9 @@ class RpcPi {
   }
   get confirmations() {
     return this.confirmationCount;
+  }
+  eventsSince(sequence: number) {
+    return this.records.filter((record) => record.sequence > sequence);
   }
 
   private send(value: unknown) {
@@ -171,7 +203,7 @@ class RpcPi {
 }
 
 test(
-  'two independent Pi sessions inherit fresh context and send a confirmed source follow-up',
+  'two Pi sessions inherit fresh context and queue a confirmed follow-up without interrupting a busy source',
   { timeout: 120_000 },
   async (t) => {
     const home = await mkdtemp('/tmp/pio-e2e-');
@@ -193,15 +225,26 @@ test(
       '--model',
       'integration',
     ];
-    const session = (name: string, extra: string[] = []) =>
+    const releaseSource = join(home, 'release-source-turn');
+    const session = (
+      name: string,
+      extra: string[] = [],
+      envExtra: NodeJS.ProcessEnv = {},
+    ) =>
       new RpcPi([...baseArgs, '--session-dir', join(home, name), ...extra], {
         ...process.env,
         HOME: home,
         PI_OPERATOR_FAUX_LOG: join(home, `${name}.log`),
+        ...envExtra,
       });
-    const source = session('source');
+    const source = session('source', [], {
+      PI_OPERATOR_FAUX_RELEASE_FILE: releaseSource,
+    });
     let operator: RpcPi | undefined;
+    let busySourceTurn: Promise<unknown> | undefined;
     t.after(async () => {
+      await writeFile(releaseSource, 'cleanup').catch(() => {});
+      await busySourceTurn?.catch(() => {});
       await operator?.stop();
       await source.stop();
     });
@@ -238,7 +281,9 @@ test(
       /Source notes: PI_OPERATOR_MARKER_ALPHA|Update notes: PI_OPERATOR_MARKER_BETA/,
     );
 
-    const sourceBeforeSend = source.lastSequence;
+    const busyStart = source.lastSequence;
+    busySourceTurn = source.promptAndWait('HOLD_SOURCE_TURN');
+    await waitForFileContent(join(home, 'source.log'), 'HOLD_SOURCE_TURN');
     const sendResult = await operator.promptAndWait('FORWARD_INSTRUCTION');
     assert.match(
       JSON.stringify(sendResult),
@@ -246,11 +291,25 @@ test(
     );
     assert.equal(operator.confirmations, 1);
     assert.equal(source.confirmations, 1);
-    await source.waitFor(
-      (item) => item.type === 'agent_settled',
-      sourceBeforeSend,
-      60_000,
+    assert.equal(
+      source
+        .eventsSince(busyStart)
+        .some((item) => item.type === 'agent_settled'),
+      false,
+      'source must remain active while the faux provider is holding its turn',
     );
+    assert.equal(
+      source.eventsSince(busyStart).some((item) => item.type === 'agent_end'),
+      false,
+      'source must not end or abort its active model run before the hold gate opens',
+    );
+    assert.doesNotMatch(
+      await readFile(join(home, 'source.log'), 'utf8'),
+      /PI_OPERATOR_INTEGRATION_DELIVERY/,
+      'the follow-up must stay queued until the active source turn is released',
+    );
+    await writeFile(releaseSource, 'continue');
+    await busySourceTurn;
 
     const operatorLog = (await readFile(join(home, 'operator.log'), 'utf8'))
       .split('\n')
@@ -263,6 +322,17 @@ test(
       'Operator result should expose the message request ID',
     );
     const sourceMessages = JSON.stringify(await source.command('get_messages'));
+    assert.ok(
+      sourceMessages.indexOf(
+        'Held source turn completed without interruption.',
+      ) >= 0,
+    );
+    assert.ok(
+      sourceMessages.indexOf(
+        'Held source turn completed without interruption.',
+      ) <
+        sourceMessages.indexOf('Source received the integration instruction.'),
+    );
     assert.match(sourceMessages, /PI_OPERATOR_INTEGRATION_DELIVERY/);
 
     const deliveryResult = await operator.promptAndWait('CHECK_DELIVERY');

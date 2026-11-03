@@ -1,9 +1,43 @@
 import { appendFileSync } from 'node:fs';
+import { access } from 'node:fs/promises';
+import { watch } from 'node:fs';
+import { basename, dirname } from 'node:path';
 import {
   fauxAssistantMessage,
   fauxProvider,
   fauxToolCall,
 } from '@earendil-works/pi-ai';
+
+function waitForRelease(path: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      watcher.close();
+      error ? reject(error) : resolve();
+    };
+    const watcher = watch(dirname(path), (_event, filename) => {
+      if (filename?.toString() === basename(path)) void check();
+    });
+    const timer = setTimeout(
+      () =>
+        finish(new Error('Timed out waiting for busy-source release gate.')),
+      60_000,
+    );
+    watcher.once('error', (error) => finish(error));
+    const check = async () => {
+      try {
+        await access(path);
+        finish();
+      } catch {
+        // The test creates this file only after confirming that the source stayed busy.
+      }
+    };
+    void check();
+  });
+}
 
 export default function (pi: any) {
   const faux = fauxProvider({
@@ -12,12 +46,23 @@ export default function (pi: any) {
   });
   pi.registerProvider(faux.provider);
 
-  const respond = (context: any) => {
+  const respond = async (context: any) => {
     faux.appendResponses([respond]);
     const transcript = JSON.stringify(context.messages);
     const log = process.env.PI_OPERATOR_FAUX_LOG;
     if (log) appendFileSync(log, `${JSON.stringify(transcript)}\n`);
 
+    const releaseFile = process.env.PI_OPERATOR_FAUX_RELEASE_FILE;
+    if (
+      releaseFile &&
+      transcript.includes('HOLD_SOURCE_TURN') &&
+      !transcript.includes('Held source turn completed without interruption.')
+    ) {
+      await waitForRelease(releaseFile);
+      return fauxAssistantMessage(
+        'Held source turn completed without interruption.',
+      );
+    }
     if (transcript.includes('delivered to committed session history'))
       return fauxAssistantMessage('Delivery verified from committed history.');
     if (transcript.includes('CHECK_DELIVERY')) {
