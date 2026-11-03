@@ -63,8 +63,13 @@ class RpcPi {
   private confirmationCount = 0;
   private stderr = '';
 
-  constructor(args: string[], env: NodeJS.ProcessEnv) {
-    this.child = spawn(process.execPath, [cli, ...args], {
+  constructor(
+    args: string[],
+    env: NodeJS.ProcessEnv,
+    executable = process.execPath,
+    executableArgs = [cli, ...args],
+  ) {
+    this.child = spawn(executable, executableArgs, {
       cwd: root,
       env,
       stdio: 'pipe',
@@ -183,24 +188,60 @@ class RpcPi {
   }
 
   async stop() {
-    if (this.child.exitCode !== null) return;
-    this.child.stdin.end();
-    await new Promise<void>((resolve) => {
-      const timer = setTimeout(() => {
-        this.child.kill('SIGTERM');
-        resolve();
-      }, 5_000);
-      this.child.once('exit', () => {
-        clearTimeout(timer);
-        resolve();
-      });
-    });
+    if (this.hasExited) return;
+    if (!this.child.stdin.destroyed && !this.child.stdin.writableEnded)
+      this.child.stdin.end();
+    if (await this.waitForExit(5_000)) return;
+    this.child.kill('SIGTERM');
+    if (await this.waitForExit(2_000)) return;
+    this.child.kill('SIGKILL');
+    if (await this.waitForExit(2_000)) return;
+    throw new Error(
+      `Pi RPC child ${this.child.pid ?? '<unknown>'} did not exit after SIGKILL.`,
+    );
   }
 
   get diagnostics() {
     return this.stderr;
   }
+
+  get hasExited() {
+    return this.child.exitCode !== null || this.child.signalCode !== null;
+  }
+
+  private waitForExit(timeoutMs: number): Promise<boolean> {
+    if (this.hasExited) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      const finish = (exited: boolean) => {
+        clearTimeout(timer);
+        this.child.off('exit', onExit);
+        resolve(exited);
+      };
+      const onExit = () => finish(true);
+      const timer = setTimeout(() => finish(this.hasExited), timeoutMs);
+      this.child.once('exit', onExit);
+      if (this.hasExited) finish(true);
+    });
+  }
 }
+
+test(
+  'RpcPi.stop waits for process exit and escalates when SIGTERM is ignored',
+  { timeout: 15_000 },
+  async () => {
+    const rpc = new RpcPi([], process.env, process.execPath, [
+      '-e',
+      `process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);`,
+    ]);
+    const started = Date.now();
+    await rpc.stop();
+    assert.equal(rpc.hasExited, true);
+    assert.ok(
+      Date.now() - started >= 6_500,
+      'stop should wait through SIGTERM grace period before SIGKILL',
+    );
+  },
+);
 
 test(
   'two Pi sessions inherit fresh context and queue a confirmed follow-up without interrupting a busy source',
