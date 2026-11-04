@@ -99,20 +99,22 @@ export function createBridge(pi: any, ctx: any, directory = runtimeDir) {
       if (!validId(targetId)) throw new Error('Invalid target session ID.');
       const response = await new Promise<string>((resolve, reject) => {
         const socket = connect(socketFor(targetId, directory));
-        let data = '';
+        let data = Buffer.alloc(0);
         const timer = setTimeout(() => {
           socket.destroy();
           reject(new Error('Operator bridge timed out.'));
         }, 3000);
         socket.on('data', (chunk) => {
-          data += chunk.toString();
-          if (Buffer.byteLength(data) > MAX) {
+          data = Buffer.concat([data, chunk]);
+          if (data.length > MAX) {
             socket.destroy();
             reject(new Error('Bridge response too large.'));
+            return;
           }
-          if (data.includes('\n')) {
+          const newline = data.indexOf(10);
+          if (newline >= 0) {
             clearTimeout(timer);
-            resolve(data);
+            resolve(data.subarray(0, newline).toString('utf8'));
             socket.end();
           }
         });
@@ -256,6 +258,13 @@ export function createBridge(pi: any, ctx: any, directory = runtimeDir) {
               )
                 throw new Error('Invalid historical entry content offset.');
               const content = Buffer.from(serialized, 'utf8');
+              if (
+                contentOffset > 0 &&
+                (content[contentOffset] & 0b1100_0000) === 0b1000_0000
+              )
+                throw new Error(
+                  'Historical entry content offset must be a UTF-8 codepoint boundary.',
+                );
               let end = Math.min(
                 contentOffset + MAX_HISTORY_PART,
                 content.length,

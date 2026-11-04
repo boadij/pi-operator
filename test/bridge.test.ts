@@ -175,11 +175,12 @@ test('bridge bounds oversized projections and retrieves entries beyond the newes
 test('history reports oversized entries as skipped and advances its offset', async (t) => {
   const dir = await mkdtemp('/tmp/op-history-skip-');
   t.after(async () => rm(dir, { recursive: true, force: true }));
+  const unicodeText = 'é🙂漢'.repeat(130_000);
   const entries = [
     {
       id: 'too-large',
       type: 'message',
-      message: { role: 'user', content: 'x'.repeat(1_100_000) },
+      message: { role: 'user', content: unicodeText },
     },
     {
       id: 'after-large',
@@ -225,6 +226,23 @@ test('history reports oversized entries as skipped and advances its offset', asy
   assert.deepEqual(later.skippedEntries, []);
   assert.equal(later.nextOffset, null);
 
+  const serialized = JSON.stringify(entries[0]);
+  const emojiIndex = serialized.indexOf('🙂');
+  const invalidOffset = Buffer.byteLength(serialized.slice(0, emojiIndex)) + 1;
+  assert.equal(
+    Buffer.from(serialized)[invalidOffset] & 0b1100_0000,
+    0b1000_0000,
+  );
+  await assert.rejects(
+    bridge.call('history_skip', null, {
+      action: 'history',
+      entryId: 'too-large',
+      entryOffset: 0,
+      contentOffset: invalidOffset,
+    }),
+    /UTF-8 codepoint boundary/,
+  );
+
   let contentOffset = 0;
   const parts: string[] = [];
   while (true) {
@@ -239,13 +257,27 @@ test('history reports oversized entries as skipped and advances its offset', asy
     assert.equal(result.part.entryOffset, 0);
     assert.equal(result.part.contentOffset, contentOffset);
     parts.push(result.part.content);
-    if (result.part.nextContentOffset === null) break;
+    if (result.part.nextContentOffset === null) {
+      assert.equal(
+        contentOffset + Buffer.byteLength(result.part.content),
+        result.part.totalBytes,
+      );
+      break;
+    }
     assert.ok(result.part.nextContentOffset > contentOffset);
+    assert.equal(
+      result.part.nextContentOffset,
+      contentOffset + Buffer.byteLength(result.part.content),
+      `offset=${contentOffset} partBytes=${Buffer.byteLength(result.part.content)} next=${result.part.nextContentOffset}`,
+    );
     contentOffset = result.part.nextContentOffset;
   }
+  assert.ok(
+    Buffer.from(parts.join(''), 'utf8').equals(Buffer.from(serialized)),
+  );
   const recovered = JSON.parse(parts.join(''));
   assert.equal(recovered.id, 'too-large');
-  assert.equal(recovered.message.content, 'x'.repeat(1_100_000));
+  assert.equal(recovered.message.content, unicodeText);
 });
 
 test('bridge does not remove an active listener', async (t) => {
