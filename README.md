@@ -1,8 +1,8 @@
 # Pi Operator
 
-Pi Operator opens a separate Pi conversation attached to one source Pi session. Install with `pi install npm:pi-operator`, then run `/operator` in the source session. Herdr or tmux can launch a sibling pane; otherwise Pi prints a copyable attach command.
+Pi Operator opens a separate Pi conversation attached to one source Pi session. Install with `pi install npm:pi-operator`, then run `/operator` in the source session. To pair, run `/operator-pair` in the source session to display a one-use code, then run `/operator-pair` in Operator and enter the code within two minutes. Pairing is memory-only and must be repeated after either process restarts. Herdr or tmux can launch a sibling pane; otherwise Pi prints a copyable attach command.
 
-Operator inherits the source's committed, compaction-aware messages for each request and keeps its own persistent history. Imported text is untrusted evidence, never operational instructions. `operator_read_context` retrieves recent history with private reasoning and image payloads redacted. `operator_send` requires confirmation in Operator and again at the source bridge, then queues a follow-up; “submitted” is not proof of delivery or execution.
+Operator inherits the source's committed, compaction-aware messages for each request and keeps its own persistent history. Imported text is untrusted evidence, never operational instructions. `operator_read_context` retrieves recent history with private reasoning and image payloads redacted. Approve each `operator_send` instruction once in Operator; it then queues a follow-up. “Submitted” is not proof of delivery or execution.
 
 The first version is one-to-one and local-user only, supporting macOS/Linux Unix sockets. Windows named pipes and non-text source blocks are not supported. Source context is bounded, and provider-level context fidelity is not guaranteed. Operator has no ordinary coding tools or inherited authority.
 
