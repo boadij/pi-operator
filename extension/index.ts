@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { DEFAULT_COMPACTION_SETTINGS } from '@earendil-works/pi-coding-agent';
 import { Type } from '@sinclair/typebox';
+import { Text } from '@earendil-works/pi-tui';
 import { fileURLToPath } from 'node:url';
 import { createBridge, requestId } from './bridge.ts';
 import { confirmInstruction } from './confirmation.ts';
@@ -51,6 +52,23 @@ export function formatHistoryResult(
   });
 }
 
+export function summarizeHistoryResult(result: any, partial = false): string {
+  if (partial) return 'Reading source history…';
+  if (result?.isError) return 'Source history read failed';
+  try {
+    const value = JSON.parse(
+      result.content?.find((item: any) => item.type === 'text')?.text ?? '',
+    );
+    if (value.part)
+      return `Read entry part · ${value.part.contentOffset}–${value.part.nextContentOffset ?? value.part.totalBytes} of ${value.part.totalBytes} bytes${value.part.nextContentOffset == null ? '' : ' · More available'}`;
+    const count = value.entries?.length ?? 0;
+    const omitted = value.skippedEntries?.length ?? 0;
+    return `${count} ${count === 1 ? 'entry' : 'entries'}${omitted ? ` · ${omitted} omitted` : ''}${Number.isInteger(value.nextOffset) && value.nextOffset !== null ? ' · More available' : ''}`;
+  } catch {
+    return 'Source history unavailable';
+  }
+}
+
 export default function (pi: ExtensionAPI) {
   let bridge: ReturnType<typeof createBridge> | undefined;
   let attachment:
@@ -86,6 +104,32 @@ export default function (pi: ExtensionAPI) {
         attachment.targetSessionFile = hello.sessionFile;
         pi.appendEntry(ATTACHMENT, { version: 1, ...attachment });
       }
+      const pair = async (_args: string, commandCtx: any) => {
+        const code = await commandCtx.ui.input(
+          'Enter the one-time pairing code shown in the source session:',
+        );
+        if (!code) return;
+        try {
+          const pairing = await bridge!.call(
+            attachment!.targetSessionId,
+            attachment!.targetSessionFile,
+            { action: 'pair', code },
+          );
+          bridge!.authorize(pairing.capability);
+          commandCtx.ui.notify('Operator paired.', 'info');
+        } catch (error) {
+          commandCtx.ui.notify(
+            `Pairing failed: ${String((error as Error).message)}`,
+            'error',
+          );
+        }
+      };
+      pi.registerCommand('operator-pair', {
+        description: 'Pair this Operator with its attached source session',
+        handler: pair,
+      });
+      if (process.env.PI_OPERATOR_TEST_PAIRING === '1')
+        queueMicrotask(() => void pair('', ctx));
       pi.on('context', async (event: any, context: any) => {
         let source: any;
         try {
@@ -179,6 +223,22 @@ export default function (pi: ExtensionAPI) {
           entryOffset: Type.Optional(Type.Integer({ minimum: 0 })),
           contentOffset: Type.Optional(Type.Integer({ minimum: 0 })),
         }),
+        renderCall(args: any, theme: any) {
+          const range =
+            args.offset === undefined ? 'latest' : `from ${args.offset}`;
+          return new Text(`Read source history ${range}`, 0, 0, theme);
+        },
+        renderResult(result: any, options: any, theme: any, context: any) {
+          return new Text(
+            summarizeHistoryResult(
+              { ...result, isError: context?.isError ?? result?.isError },
+              options?.isPartial,
+            ),
+            0,
+            0,
+            theme,
+          );
+        },
         async execute(_id, params) {
           const result = await bridge!.call(
             attachment!.targetSessionId,
@@ -283,11 +343,26 @@ export default function (pi: ExtensionAPI) {
               details: {},
             };
           const id = requestId();
-          const result = await bridge!.call(
-            attachment!.targetSessionId,
-            attachment!.targetSessionFile,
-            { action: 'send', message: params.message, requestId: id },
-          );
+          let result: any;
+          try {
+            result = await bridge!.call(
+              attachment!.targetSessionId,
+              attachment!.targetSessionFile,
+              { action: 'send', message: params.message, requestId: id },
+            );
+          } catch (error) {
+            if (/timed out/.test(String((error as Error).message)))
+              return {
+                content: [
+                  {
+                    type: 'text',
+                    text: `Delivery status unknown; do not resend until checked with operator_check_delivery. Request ID: ${id}`,
+                  },
+                ],
+                details: {},
+              };
+            throw error;
+          }
           return {
             content: [
               { type: 'text', text: `${result.status}. Request ID: ${id}` },
@@ -300,6 +375,19 @@ export default function (pi: ExtensionAPI) {
     }
     bridge = createBridge(pi, ctx);
     await bridge.start();
+    const pair = async (_args: string, commandCtx: any) => {
+      const code = bridge!.createPairingCode();
+      commandCtx.ui.notify(
+        `One-time Operator pairing code (expires in 2 minutes): ${code}`,
+        'warning',
+      );
+    };
+    pi.registerCommand('operator-pair', {
+      description: 'Start one-time pairing with an attached Operator',
+      handler: pair,
+    });
+    if (process.env.PI_OPERATOR_TEST_PAIRING === '1')
+      queueMicrotask(() => void pair('', ctx));
     pi.registerCommand('operator', {
       description: 'Open an attached Pi Operator conversation',
       handler: async (_args, commandCtx) => {

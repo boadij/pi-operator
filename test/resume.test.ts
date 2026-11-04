@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import extension, { formatHistoryResult } from '../extension/index.ts';
+import extension, {
+  formatHistoryResult,
+  summarizeHistoryResult,
+} from '../extension/index.ts';
 import { createBridge } from '../extension/bridge.ts';
 
 test('history tool accepts legacy responses and reports a stalled legacy page', () => {
@@ -23,9 +26,52 @@ test('history tool accepts legacy responses and reports a stalled legacy page', 
   assert.match(stalled.warning, /older version.*not retrieved/);
 });
 
+test('history rendering summarizes pagination, omission, continuation, partial and errors without replacing evidence', () => {
+  const result = {
+    content: [
+      {
+        type: 'text',
+        text: formatHistoryResult(
+          {
+            entries: [{ id: 'a' }],
+            skippedEntries: [{ id: 'b' }],
+            offset: 0,
+            nextOffset: 2,
+          },
+          0,
+        ),
+      },
+    ],
+  };
+  assert.equal(
+    summarizeHistoryResult(result),
+    '1 entry · 1 omitted · More available',
+  );
+  assert.match(result.content[0].text, /"id":"a"/);
+  assert.equal(
+    summarizeHistoryResult({
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            part: { contentOffset: 0, nextContentOffset: 8, totalBytes: 12 },
+          }),
+        },
+      ],
+    }),
+    'Read entry part · 0–8 of 12 bytes · More available',
+  );
+  assert.equal(summarizeHistoryResult(result, true), 'Reading source history…');
+  assert.equal(
+    summarizeHistoryResult({ isError: true }),
+    'Source history read failed',
+  );
+});
+
 test('persisted Operator initializes offline and reconnects only to its saved source', async (t) => {
   const handlers = new Map<string, (...args: any[]) => any>();
   const tools: any[] = [];
+  const commands: string[] = [];
   const sessionId = `resume-${process.pid}`;
   const sourceEntries = [
     {
@@ -64,7 +110,7 @@ test('persisted Operator initializes offline and reconnects only to its saved so
     on: (name: string, handler: (...args: any[]) => any) =>
       handlers.set(name, handler),
     registerTool: (tool: any) => tools.push(tool),
-    registerCommand() {},
+    registerCommand: (name: string) => commands.push(name),
     getActiveTools: () => [],
     getAllTools: () => [],
     appendEntry() {
@@ -75,6 +121,7 @@ test('persisted Operator initializes offline and reconnects only to its saved so
   await handlers.get('session_start')!({}, ctx);
   assert.ok(tools.some((tool) => tool.name === 'operator_read_context'));
   assert.ok(tools.some((tool) => tool.name === 'operator_source_status'));
+  assert.ok(commands.includes('operator-pair'));
   const context = handlers.get('context')!;
   const event = { messages: [{ role: 'user', content: 'hello' }] };
   const disconnected = await context(event, {
@@ -114,6 +161,11 @@ test('persisted Operator initializes offline and reconnects only to its saved so
   assert.doesNotMatch(reconnected.messages[0].content, /source policy/);
   assert.match(reconnected.messages[0].content, new RegExp(sessionId));
   const readTool = tools.find((tool) => tool.name === 'operator_read_context');
+  assert.equal(
+    readTool.renderResult({ isError: true, content: [] }, {}, {}, undefined)
+      .text,
+    'Source history read failed',
+  );
   const skippedPage = await readTool.execute('tool-call', {
     offset: 0,
     limit: 1,
