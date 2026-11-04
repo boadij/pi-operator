@@ -94,4 +94,12 @@ jobs:
       - env:
           PR: ${{ github.event.pull_request.number }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm dist-tag rm pi-operator "pr-${PR}" --registry https://registry.npmjs.org
+        run: |
+          if output=$(npm dist-tag rm pi-operator "pr-${PR}" --registry https://registry.npmjs.org 2>&1); then
+            echo "$output"
+          elif grep -q 'npm error code E404' <<<"$output"; then
+            echo "No published preview tag to remove."
+          else
+            echo "$output" >&2
+            exit 1
+          fi
