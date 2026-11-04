@@ -47,22 +47,37 @@ test('preview cleanup ignores absent npm tags but preserves other failures', asy
     fileURLToPath(new URL('../.github/workflows/preview.yml', import.meta.url)),
     'utf8',
   );
-  const marker = '        run: |\\n';
+  const marker = '        run: |\n';
+  const position = workflow.lastIndexOf(marker);
+  assert.ok(position >= 0);
   const script = workflow
-    .slice(workflow.lastIndexOf(marker) + marker.length)
+    .slice(position + marker.length)
     .trimEnd()
-    .split('\\n')
+    .split('\n')
     .map((line) => line.slice(10))
-    .join('\\n');
+    .join('\n');
   for (const [npmStatus, output, expected] of [
     [0, 'removed', 0],
     [1, 'npm error code E404', 0],
     [1, 'npm error code E403', 1],
   ] as const) {
-    const run = spawnSync('bash', ['-e', '-c', `npm() { echo "$MOCK_OUTPUT"; return "$MOCK_STATUS"; }\\n${script}`], {
-      encoding: 'utf8',
-      env: { ...process.env, PR: '1', MOCK_OUTPUT: output, MOCK_STATUS: String(npmStatus) },
-    });
+    const run = spawnSync(
+      'bash',
+      [
+        '-e',
+        '-c',
+        `npm() { echo "$MOCK_OUTPUT"; return "$MOCK_STATUS"; }\n${script}`,
+      ],
+      {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          PR: '1',
+          MOCK_OUTPUT: output,
+          MOCK_STATUS: String(npmStatus),
+        },
+      },
+    );
     assert.equal(run.status, expected, run.stderr);
   }
 });
