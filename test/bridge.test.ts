@@ -70,12 +70,47 @@ test('bridge binds exact session identity, projects context, and queues sends as
     '/sessions/source.jsonl',
   );
   await assert.rejects(
+    bridge.call('source_1', '/sessions/source.jsonl', {
+      action: 'send',
+      message: 'unauthorized',
+      requestId: 'request-unauthorized',
+    }),
+    /Unauthorized/,
+  );
+  await assert.rejects(
+    bridge.call('source_1', '/sessions/source.jsonl', { action: 'pair' }),
+    /pairing code/,
+  );
+  const pairingCode = bridge.createPairingCode();
+  await assert.rejects(
+    bridge.call('source_1', '/sessions/source.jsonl', {
+      action: 'pair',
+      code: 'incorrect',
+    }),
+    /pairing code/,
+  );
+  const pairing = await bridge.call('source_1', '/sessions/source.jsonl', {
+    action: 'pair',
+    code: pairingCode,
+  });
+  assert.equal(JSON.stringify(pairing).includes(pairingCode), false);
+  bridge.authorize(pairing.capability);
+  await assert.rejects(
+    bridge.call('source_1', '/sessions/source.jsonl', {
+      action: 'pair',
+      code: pairingCode,
+    }),
+    /pairing code/,
+  );
+  await assert.rejects(
     bridge.call('source_1', '/sessions/other.jsonl', { action: 'hello' }),
     /identity changed/,
   );
   const context = await bridge.call('source_1', '/sessions/source.jsonl', {
     action: 'context',
   });
+  assert.doesNotMatch(JSON.stringify(context), new RegExp(pairingCode));
+  assert.doesNotMatch(JSON.stringify(context), new RegExp(pairing.capability));
   assert.deepEqual(context.entries[0], {
     id: 'projected-1',
     messages: [{ role: 'assistant', content: 'projected' }],
@@ -97,7 +132,26 @@ test('bridge binds exact session identity, projects context, and queues sends as
   assert.match(sent.status, /submitted; delivery is not verified/);
   assert.equal((calls[0] as any)[1].deliverAs, 'followUp');
   assert.equal((calls[0] as any)[0].details.requestId, 'request-1');
-  assert.deepEqual(confirmations, ['source_1\n\nplease act']);
+  assert.deepEqual(confirmations, []);
+  assert.match(
+    (
+      await bridge.call('source_1', '/sessions/source.jsonl', {
+        action: 'send',
+        message: 'please act',
+        requestId: 'request-1',
+      })
+    ).status,
+    /submitted/,
+  );
+  assert.equal(calls.length, 1);
+  await assert.rejects(
+    bridge.call('source_1', '/sessions/source.jsonl', {
+      action: 'send',
+      message: 'changed',
+      requestId: 'request-1',
+    }),
+    /Unauthorized/,
+  );
   entries.push({
     id: 'sent',
     type: 'custom_message',
@@ -293,56 +347,38 @@ test('bridge does not remove an active listener', async (t) => {
   await assert.rejects(second.start(), /already owns this session/);
 });
 
-test('bridge rejects a send when source-side confirmation is unavailable', async (t) => {
-  const dir = await mkdtemp('/tmp/op-no-ui-');
+test('pairing codes expire and cannot be used against a different session identity', async (t) => {
+  const dir = await mkdtemp('/tmp/op-expired-');
   t.after(async () => rm(dir, { recursive: true, force: true }));
-  const sent: unknown[] = [];
-  const ctx = {
-    sessionManager: { getSessionId: () => 'no_ui', getSessionFile: () => null },
-  };
   const bridge = createBridge(
-    { sendMessage: (...args: unknown[]) => sent.push(args) },
-    ctx,
-    dir,
-  );
-  await bridge.start();
-  t.after(() => bridge.close());
-  await assert.rejects(
-    bridge.call('no_ui', null, {
-      action: 'send',
-      message: 'unsafe',
-      requestId: 'test',
-    }),
-    /source-side confirmation was rejected or unavailable/,
-  );
-  assert.equal(sent.length, 0);
-});
-
-test('bridge rejects a send when source-side confirmation is declined', async (t) => {
-  const dir = await mkdtemp('/tmp/op-declined-');
-  t.after(async () => rm(dir, { recursive: true, force: true }));
-  const sent: unknown[] = [];
-  const ctx = {
-    ui: { confirm: async () => false },
-    sessionManager: {
-      getSessionId: () => 'declined',
-      getSessionFile: () => null,
+    {},
+    {
+      sessionManager: {
+        getSessionId: () => 'expired',
+        getSessionFile: () => null,
+      },
     },
-  };
-  const bridge = createBridge(
-    { sendMessage: (...args: unknown[]) => sent.push(args) },
-    ctx,
     dir,
   );
   await bridge.start();
   t.after(() => bridge.close());
+  const code = bridge.createPairingCode();
+  const now = Date.now;
+  Date.now = () => now() + 121_000;
+  try {
+    await assert.rejects(
+      bridge.call('expired', null, { action: 'pair', code }),
+      /pairing code/,
+    );
+  } finally {
+    Date.now = now;
+  }
+  const fresh = bridge.createPairingCode();
   await assert.rejects(
-    bridge.call('declined', null, {
-      action: 'send',
-      message: 'declined',
-      requestId: 'test',
+    bridge.call('expired', '/different/session.jsonl', {
+      action: 'pair',
+      code: fresh,
     }),
-    /source-side confirmation was rejected or unavailable/,
+    /identity changed/,
   );
-  assert.equal(sent.length, 0);
 });

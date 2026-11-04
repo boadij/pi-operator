@@ -1,4 +1,10 @@
-import { createHash, randomUUID } from 'node:crypto';
+import {
+  createHash,
+  createHmac,
+  randomBytes,
+  randomUUID,
+  timingSafeEqual,
+} from 'node:crypto';
 import { chmod, mkdir, rm } from 'node:fs/promises';
 import { lstat } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -24,8 +30,19 @@ export function createBridge(pi: any, ctx: any, directory = runtimeDir) {
   const path = socketFor(sessionId, directory);
   let server: Server | undefined;
   let ownedSocket: { dev: number; ino: number } | undefined;
+  let capability: string | undefined;
+  let pairingCode: { value: string; expires: number } | undefined;
+  const submitted = new Map<string, string>();
   return {
     path,
+    authorize(value: string) {
+      capability = value;
+    },
+    createPairingCode() {
+      const value = randomBytes(16).toString('base64url');
+      pairingCode = { value, expires: Date.now() + 120_000 };
+      return value;
+    },
     async start() {
       await mkdir(directory, { mode: 0o700, recursive: true });
       const dir = await lstat(directory);
@@ -124,8 +141,26 @@ export function createBridge(pi: any, ctx: any, directory = runtimeDir) {
         });
         socket.on('connect', () =>
           socket.write(
-            JSON.stringify({ ...(request as object), targetId, targetFile }) +
-              '\n',
+            JSON.stringify({
+              ...(request as object),
+              targetId,
+              targetFile,
+              ...(request && (request as any).action === 'send' && capability
+                ? {
+                    authorization: createHmac('sha256', capability)
+                      .update(
+                        JSON.stringify({
+                          action: 'send',
+                          targetId,
+                          targetFile,
+                          requestId: (request as any).requestId,
+                          message: (request as any).message,
+                        }),
+                      )
+                      .digest('hex'),
+                  }
+                : {}),
+            }) + '\n',
           ),
         );
       });
@@ -164,6 +199,21 @@ export function createBridge(pi: any, ctx: any, directory = runtimeDir) {
           case 'hello':
             body = {};
             break;
+          case 'pair': {
+            if (
+              !pairingCode ||
+              Date.now() >= pairingCode.expires ||
+              typeof q.code !== 'string' ||
+              q.code !== pairingCode.value
+            )
+              throw new Error(
+                'Invalid, expired, or already used pairing code.',
+              );
+            pairingCode = undefined;
+            pairingCapability = randomBytes(32).toString('hex');
+            body = { capability: pairingCapability };
+            break;
+          }
           case 'context': {
             const projection = ctx.sessionManager.buildSessionProjection();
             const entries: any[] = [];
@@ -352,10 +402,15 @@ export function createBridge(pi: any, ctx: any, directory = runtimeDir) {
               q.message.length > 20_000
             )
               throw new Error('Invalid instruction.');
-            if (!(await confirmInstruction(ctx.ui, sessionId, q.message)))
-              throw new Error(
-                'Instruction not sent: source-side confirmation was rejected or unavailable.',
-              );
+            if (!pairingCapability || !validAuthorization(q))
+              throw new Error('Unauthorized or tampered instruction.');
+            if (typeof q.requestId !== 'string' || submitted.has(q.requestId)) {
+              if (submitted.get(q.requestId) === q.message) {
+                body = { status: 'submitted; delivery is not verified' };
+                break;
+              }
+              throw new Error('Replayed or invalid instruction request.');
+            }
             pi.sendMessage(
               {
                 customType: 'pi-operator-instruction',
@@ -365,6 +420,7 @@ export function createBridge(pi: any, ctx: any, directory = runtimeDir) {
               },
               { deliverAs: 'followUp', triggerTurn: true },
             );
+            submitted.set(q.requestId, q.message);
             body = { status: 'submitted; delivery is not verified' };
             break;
           default:
@@ -387,6 +443,27 @@ export function createBridge(pi: any, ctx: any, directory = runtimeDir) {
         );
       }
     });
+  }
+  let pairingCapability: string | undefined;
+  function validAuthorization(q: any) {
+    if (
+      !pairingCapability ||
+      typeof q.authorization !== 'string' ||
+      !/^[a-f0-9]{64}$/.test(q.authorization)
+    )
+      return false;
+    const expected = createHmac('sha256', pairingCapability)
+      .update(
+        JSON.stringify({
+          action: 'send',
+          targetId: q.targetId,
+          targetFile: q.targetFile,
+          requestId: q.requestId,
+          message: q.message,
+        }),
+      )
+      .digest();
+    return timingSafeEqual(expected, Buffer.from(q.authorization, 'hex'));
   }
 }
 
