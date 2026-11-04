@@ -151,11 +151,63 @@ test('bridge bounds oversized projections and retrieves entries beyond the newes
   assert.equal(projection.omittedCount, 1);
   const history = await bridge.call('pages', null, {
     action: 'history',
-    offset: 0,
+    offset: 230,
     limit: 20,
   });
-  assert.equal(history.entries[0].id, 'source-0');
-  assert.equal(history.nextOffset, 20);
+  assert.equal(history.entries[0].id, 'source-230');
+  assert.equal(history.nextOffset, 250);
+});
+
+test('history reports oversized entries as skipped and advances its offset', async (t) => {
+  const dir = await mkdtemp('/tmp/op-history-skip-');
+  t.after(async () => rm(dir, { recursive: true, force: true }));
+  const entries = [
+    {
+      id: 'too-large',
+      type: 'message',
+      message: { role: 'user', content: 'x'.repeat(1_100_000) },
+    },
+    {
+      id: 'after-large',
+      type: 'message',
+      message: { role: 'user', content: 'later evidence' },
+    },
+  ];
+  const bridge = createBridge(
+    {},
+    {
+      sessionManager: {
+        getSessionId: () => 'history_skip',
+        getSessionFile: () => null,
+        getEntries: () => entries,
+      },
+    },
+    dir,
+  );
+  await bridge.start();
+  t.after(() => bridge.close());
+  const skipped = await bridge.call('history_skip', null, {
+    action: 'history',
+    offset: 0,
+    limit: 1,
+  });
+  assert.deepEqual(skipped.entries, []);
+  assert.deepEqual(skipped.skippedEntries, [
+    {
+      id: 'too-large',
+      reason:
+        'Redacted entry exceeds the bridge response budget; content was not returned.',
+    },
+  ]);
+  assert.equal(skipped.nextOffset, 1);
+  const later = await bridge.call('history_skip', null, {
+    action: 'history',
+    offset: skipped.nextOffset,
+    limit: 1,
+  });
+  assert.equal(later.entries[0].id, 'after-large');
+  assert.deepEqual(later.skippedEntries, []);
+  assert.equal(later.nextOffset, null);
 });
 
 test('bridge does not remove an active listener', async (t) => {

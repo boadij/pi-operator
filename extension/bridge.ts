@@ -206,19 +206,32 @@ export function createBridge(pi: any, ctx: any, directory = runtimeDir) {
               Math.max(1, Math.floor(Number(q.limit) || 50)),
             );
             const page: any[] = [];
+            const skippedEntries: { id: string | null; reason: string }[] = [];
             let bytes = 0;
+            let scanned = 0;
             for (const entry of all.slice(offset, offset + limit)) {
               const safeEntry = redactHistoryEntries([entry])[0];
               const size = Buffer.byteLength(JSON.stringify(safeEntry));
+              if (size > MAX - 4096) {
+                skippedEntries.push({
+                  id: typeof entry.id === 'string' ? entry.id : null,
+                  reason:
+                    'Redacted entry exceeds the bridge response budget; content was not returned.',
+                });
+                scanned++;
+                continue;
+              }
               if (bytes + size > MAX - 4096) break;
               page.push(safeEntry);
               bytes += size;
+              scanned++;
             }
             body = {
               entries: page,
+              skippedEntries,
               offset,
               nextOffset:
-                offset + page.length < all.length ? offset + page.length : null,
+                offset + scanned < all.length ? offset + scanned : null,
             };
             break;
           }

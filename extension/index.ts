@@ -131,7 +131,7 @@ export default function (pi: ExtensionAPI) {
         name: 'operator_read_context',
         label: 'Read source context',
         description:
-          'Retrieve bounded committed source-session messages by entry offset.',
+          'Retrieve bounded source history by entry offset. Check skippedEntries: skipped content was not retrieved. Continue at nextOffset when present.',
         parameters: Type.Object({
           limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 200 })),
           offset: Type.Optional(Type.Integer({ minimum: 0 })),
@@ -148,8 +148,12 @@ export default function (pi: ExtensionAPI) {
                 type: 'text',
                 text: JSON.stringify({
                   entries: result.entries,
+                  skippedEntries: result.skippedEntries,
                   offset: result.offset,
                   nextOffset: result.nextOffset,
+                  warning: result.skippedEntries.length
+                    ? 'Some entries were skipped because they exceed the response budget; their contents were not retrieved. Continue at nextOffset for later entries.'
+                    : undefined,
                 }),
               },
             ],
