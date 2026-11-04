@@ -39,11 +39,12 @@ export function formatHistoryResult(
       'The source bridge is an older version and could not return the entry at this offset. It was not retrieved; continuing at nextOffset skips it.';
   } else if (skippedEntries.length) {
     warning =
-      'Some entries were skipped because they exceed the response budget; their contents were not retrieved. Continue at nextOffset for later entries.';
+      'Some entries were not returned. Retrieve each in parts using its entryId and entryOffset, and use nextOffset to continue to later history.';
   }
   return JSON.stringify({
     entries,
     skippedEntries,
+    part: result.part,
     offset: result.offset,
     nextOffset,
     warning,
@@ -138,6 +139,9 @@ export default function (pi: ExtensionAPI) {
             ),
             systemPrompt: source.systemPrompt,
             compactionSummaries: [
+              ...(source.systemPromptLimitation
+                ? [source.systemPromptLimitation]
+                : []),
               ...(source.omittedCount
                 ? [
                     `${source.omittedCount} source entries omitted by bridge size limit; use operator_read_context with an entry offset to retrieve history.`,
@@ -167,16 +171,26 @@ export default function (pi: ExtensionAPI) {
         name: 'operator_read_context',
         label: 'Read source context',
         description:
-          'Retrieve bounded source history by entry offset. Check skippedEntries: skipped content was not retrieved. Continue at nextOffset when present.',
+          'Retrieve bounded source history by entry offset. Oversized entries list entryId and entryOffset in skippedEntries; retrieve them by providing those fields and following part.nextContentOffset. Never treat an unreturned entry as retrieved.',
         parameters: Type.Object({
           limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 200 })),
           offset: Type.Optional(Type.Integer({ minimum: 0 })),
+          entryId: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })),
+          entryOffset: Type.Optional(Type.Integer({ minimum: 0 })),
+          contentOffset: Type.Optional(Type.Integer({ minimum: 0 })),
         }),
         async execute(_id, params) {
           const result = await bridge!.call(
             attachment!.targetSessionId,
             attachment!.targetSessionFile,
-            { action: 'history', limit: params.limit, offset: params.offset },
+            {
+              action: 'history',
+              limit: params.limit,
+              offset: params.offset,
+              entryId: params.entryId,
+              entryOffset: params.entryOffset,
+              contentOffset: params.contentOffset,
+            },
           );
           return {
             content: [

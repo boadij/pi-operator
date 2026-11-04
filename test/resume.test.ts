@@ -110,7 +110,7 @@ test('persisted Operator initializes offline and reconnects only to its saved so
     limit: 1,
   });
   const skippedResult = JSON.parse(skippedPage.content[0].text);
-  assert.match(skippedResult.warning, /contents were not retrieved/);
+  assert.match(skippedResult.warning, /Retrieve each in parts/);
   assert.equal(skippedResult.skippedEntries[0].id, 'too-large');
   assert.equal(skippedResult.nextOffset, 1);
   const laterPage = await readTool.execute('tool-call', {
@@ -121,4 +121,22 @@ test('persisted Operator initializes offline and reconnects only to its saved so
     JSON.parse(laterPage.content[0].text).entries[0].id,
     'after-large',
   );
+  let contentOffset = 0;
+  const parts: string[] = [];
+  while (true) {
+    const result = await readTool.execute('tool-call', {
+      entryId: 'too-large',
+      entryOffset: 0,
+      contentOffset,
+    });
+    const part = JSON.parse(result.content[0].text).part;
+    assert.equal(part.entryId, 'too-large');
+    assert.equal(part.entryOffset, 0);
+    assert.equal(part.contentOffset, contentOffset);
+    parts.push(part.content);
+    if (part.nextContentOffset === null) break;
+    assert.ok(part.nextContentOffset > contentOffset);
+    contentOffset = part.nextContentOffset;
+  }
+  assert.equal(JSON.parse(parts.join('')).id, 'too-large');
 });

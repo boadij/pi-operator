@@ -8,6 +8,7 @@ import { confirmInstruction } from './confirmation.ts';
 import { redactHistoryEntries } from './context.ts';
 
 const MAX = 1_000_000;
+const MAX_HISTORY_PART = 400_000;
 const validId = (id: string) => /^[a-zA-Z0-9_-]{1,128}$/.test(id);
 const runtimeDir = join(homedir(), '.pi', 'operator');
 const socketFor = (id: string, directory = runtimeDir) =>
@@ -164,8 +165,46 @@ export function createBridge(pi: any, ctx: any, directory = runtimeDir) {
           case 'context': {
             const projection = ctx.sessionManager.buildSessionProjection();
             const entries: any[] = [];
-            let bytes = 0;
-            let omittedCount = 0;
+            let omittedCount = projection.entries.length;
+            const prompt = String(ctx.getSystemPrompt());
+            const promptBytes = Buffer.byteLength(prompt);
+            const includedPromptBody = {
+              entries,
+              omittedCount,
+              leafId: ctx.sessionManager.getLeafId(),
+              systemPrompt: prompt,
+              systemPromptIncluded: true,
+            };
+            const emptyResponseSize =
+              promptBytes <= MAX
+                ? Buffer.byteLength(
+                    JSON.stringify({
+                      sessionId,
+                      sessionFile,
+                      ...includedPromptBody,
+                    }),
+                  )
+                : MAX + 1;
+            const systemPromptIncluded = emptyResponseSize < MAX;
+            body = systemPromptIncluded
+              ? includedPromptBody
+              : {
+                  entries,
+                  omittedCount,
+                  leafId: ctx.sessionManager.getLeafId(),
+                  systemPrompt: null,
+                  systemPromptIncluded: false,
+                  systemPromptLimitation:
+                    'The complete source system prompt exceeds the bridge response budget and was omitted; it was not truncated.',
+                };
+            let bytes = Math.max(
+              0,
+              MAX -
+                Buffer.byteLength(
+                  JSON.stringify({ sessionId, sessionFile, ...body }),
+                ) -
+                4096,
+            );
             // Bound each entry before building a response; a single oversized
             // entry is left for the offset-based history reader.
             for (
@@ -183,30 +222,75 @@ export function createBridge(pi: any, ctx: any, directory = runtimeDir) {
                     : undefined,
               };
               const size = Buffer.byteLength(JSON.stringify(candidate));
-              if (bytes + size > MAX - 96_000) {
-                omittedCount++;
+              if (size + 1 > bytes) {
                 continue;
               }
               entries.unshift(candidate);
-              bytes += size;
+              omittedCount--;
+              bytes -= size + 1;
             }
-            body = {
-              entries,
-              omittedCount,
-              leafId: ctx.sessionManager.getLeafId(),
-              systemPrompt: String(ctx.getSystemPrompt()).slice(0, 16_000),
-            };
+            body.omittedCount = omittedCount;
             break;
           }
           case 'history': {
             const all = ctx.sessionManager.getEntries();
+            if (q.entryId !== undefined || q.entryOffset !== undefined) {
+              const entryOffset = Number(q.entryOffset);
+              if (
+                !Number.isInteger(entryOffset) ||
+                entryOffset < 0 ||
+                typeof q.entryId !== 'string' ||
+                all[entryOffset]?.id !== q.entryId
+              )
+                throw new Error(
+                  'Historical entry identity changed; refusing part retrieval.',
+                );
+              const serialized = JSON.stringify(
+                redactHistoryEntries([all[entryOffset]])[0],
+              );
+              const contentOffset = Number(q.contentOffset ?? 0);
+              if (
+                !Number.isInteger(contentOffset) ||
+                contentOffset < 0 ||
+                contentOffset >= Buffer.byteLength(serialized)
+              )
+                throw new Error('Invalid historical entry content offset.');
+              const content = Buffer.from(serialized, 'utf8');
+              let end = Math.min(
+                contentOffset + MAX_HISTORY_PART,
+                content.length,
+              );
+              while (
+                end < content.length &&
+                (content[end] & 0b1100_0000) === 0b1000_0000
+              )
+                end--;
+              body = {
+                part: {
+                  entryId: q.entryId,
+                  entryOffset,
+                  contentOffset,
+                  content: content
+                    .subarray(contentOffset, end)
+                    .toString('utf8'),
+                  nextContentOffset: end < content.length ? end : null,
+                  totalBytes: content.length,
+                },
+              };
+              break;
+            }
             const offset = Math.max(0, Math.floor(Number(q.offset) || 0));
             const limit = Math.min(
               200,
               Math.max(1, Math.floor(Number(q.limit) || 50)),
             );
             const page: any[] = [];
-            const skippedEntries: { id: string | null; reason: string }[] = [];
+            const skippedEntries: {
+              id: string | null;
+              reason: string;
+              entryOffset?: number;
+              partsAvailable?: boolean;
+            }[] = [];
             let bytes = 0;
             let scanned = 0;
             for (const entry of all.slice(offset, offset + limit)) {
@@ -215,8 +299,10 @@ export function createBridge(pi: any, ctx: any, directory = runtimeDir) {
               if (size > MAX - 4096) {
                 skippedEntries.push({
                   id: typeof entry.id === 'string' ? entry.id : null,
+                  entryOffset: offset + scanned,
+                  partsAvailable: typeof entry.id === 'string',
                   reason:
-                    'Redacted entry exceeds the bridge response budget; content was not returned.',
+                    'Redacted entry exceeds the response budget; retrieve its content in parts using entryId and entryOffset.',
                 });
                 scanned++;
                 continue;
