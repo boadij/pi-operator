@@ -26,7 +26,7 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           json=$(gh api "repos/$REPO/pulls/$PR")
-          test "$(jq -r '.state' <<<"$json")" = OPEN
+          test "$(jq -r '.state' <<<"$json")" = open
           test "$(jq -r '.head.repo.full_name' <<<"$json")" = "$REPO"
           sha=$(jq -r '.head.sha' <<<"$json")
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
@@ -70,7 +70,7 @@ jobs:
           EXPECTED_SHA: ${{ needs.build.outputs.sha }}
         run: |
           json=$(gh api "repos/$REPO/pulls/$PR")
-          test "$(jq -r '.state' <<<"$json")" = OPEN
+          test "$(jq -r '.state' <<<"$json")" = open
           test "$(jq -r '.head.repo.full_name' <<<"$json")" = "$REPO"
           test "$(jq -r '.head.sha' <<<"$json")" = "$EXPECTED_SHA"
       - uses: actions/setup-node@v4

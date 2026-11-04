@@ -40,7 +40,12 @@ test('bridge binds exact session identity, projects context, and queues sends as
         messages: [{ role: 'assistant', content: 'projected' }],
         entries: [
           {
-            sourceEntry: { type: 'compaction', summary: 'compaction summary' },
+            sourceEntry: {
+              id: 'projected-1',
+              type: 'compaction',
+              summary: 'compaction summary',
+            },
+            messages: [{ role: 'assistant', content: 'projected' }],
           },
         ],
       }),
@@ -71,11 +76,11 @@ test('bridge binds exact session identity, projects context, and queues sends as
   const context = await bridge.call('source_1', '/sessions/source.jsonl', {
     action: 'context',
   });
-  assert.deepEqual(context.messages[0], {
-    role: 'assistant',
-    content: 'projected',
+  assert.deepEqual(context.entries[0], {
+    id: 'projected-1',
+    messages: [{ role: 'assistant', content: 'projected' }],
+    compactionSummary: 'compaction summary',
   });
-  assert.deepEqual(context.compactionSummaries, ['compaction summary']);
   const history = await bridge.call('source_1', '/sessions/source.jsonl', {
     action: 'history',
     limit: 2,
@@ -103,6 +108,54 @@ test('bridge binds exact session identity, projects context, and queues sends as
     requestId: 'request-1',
   });
   assert.match(delivery.status, /committed session history/);
+});
+
+test('bridge bounds oversized projections and retrieves entries beyond the newest 200 by offset', async (t) => {
+  const dir = await mkdtemp('/tmp/op-pages-');
+  t.after(async () => rm(dir, { recursive: true, force: true }));
+  const entries = Array.from({ length: 251 }, (_, i) => ({
+    id: `source-${i}`,
+    type: 'message',
+    message: { role: 'user', content: `evidence-${i}` },
+  }));
+  const ctx = {
+    getSystemPrompt: () => 'prompt',
+    sessionManager: {
+      getSessionId: () => 'pages',
+      getSessionFile: () => null,
+      getLeafId: () => 'source-250',
+      getEntries: () => entries,
+      buildSessionProjection: () => ({
+        entries: [
+          {
+            sourceEntry: { id: 'large', type: 'message' },
+            messages: [{ role: 'user', content: 'x'.repeat(1_100_000) }],
+          },
+          {
+            sourceEntry: { id: 'small', type: 'message' },
+            messages: [{ role: 'user', content: 'kept' }],
+          },
+        ],
+      }),
+    },
+  };
+  const bridge = createBridge({}, ctx, dir);
+  await bridge.start();
+  t.after(() => bridge.close());
+  const projection = await bridge.call('pages', null, { action: 'context' });
+  assert.ok(Buffer.byteLength(JSON.stringify(projection)) < 1_000_000);
+  assert.deepEqual(
+    projection.entries.map((entry: any) => entry.id),
+    ['small'],
+  );
+  assert.equal(projection.omittedCount, 1);
+  const history = await bridge.call('pages', null, {
+    action: 'history',
+    offset: 0,
+    limit: 20,
+  });
+  assert.equal(history.entries[0].id, 'source-0');
+  assert.equal(history.nextOffset, 20);
 });
 
 test('bridge does not remove an active listener', async (t) => {

@@ -27,6 +27,10 @@ export function launchArgv(
   ];
 }
 
+export function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
 export function launch(piPath: string, extensionPath: string, target: string) {
   const base = join(homedir(), '.pi', 'operator-sessions');
   const argv = launchArgv(
@@ -45,7 +49,8 @@ export function launch(piPath: string, extensionPath: string, target: string) {
     if (!split.error && split.status === 0) {
       try {
         const paneId = JSON.parse(split.stdout).result.pane.pane_id;
-        const run = spawnSync('herdr', ['pane', 'run', paneId, ...argv], {
+        const command = argv.map(shellQuote).join(' ');
+        const run = spawnSync('herdr', ['pane', 'run', paneId, command], {
           stdio: 'ignore',
           timeout: 5000,
         });
@@ -57,9 +62,7 @@ export function launch(piPath: string, extensionPath: string, target: string) {
     }
   }
   if (process.env.TMUX) {
-    const command = argv
-      .map((v) => `'${v.replaceAll("'", "'\\''")}'`)
-      .join(' ');
+    const command = argv.map(shellQuote).join(' ');
     const run = spawnSync('tmux', ['split-window', '-d', command], {
       stdio: 'ignore',
       timeout: 5000,

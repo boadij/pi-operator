@@ -42,19 +42,35 @@ export default function (pi: ExtensionAPI) {
         targetSessionFile: saved?.targetSessionFile ?? null,
       };
       bridge = createBridge(pi, ctx);
-      const hello = await bridge.call(target, attachment.targetSessionFile, {
-        action: 'hello',
-      });
       if (!saved) {
+        const hello = await bridge.call(target, attachment.targetSessionFile, {
+          action: 'hello',
+        });
         attachment.targetSessionFile = hello.sessionFile;
         pi.appendEntry(ATTACHMENT, { version: 1, ...attachment });
       }
       pi.on('context', async (event: any, context: any) => {
-        const source = await bridge!.call(
-          attachment!.targetSessionId,
-          attachment!.targetSessionFile,
-          { action: 'context' },
-        );
+        let source: any;
+        try {
+          source = await bridge!.call(
+            attachment!.targetSessionId,
+            attachment!.targetSessionFile,
+            { action: 'context' },
+          );
+        } catch (error) {
+          return {
+            messages: [
+              {
+                role: 'custom',
+                customType: 'pi-operator-context',
+                content: `Source session ${attachment!.targetSessionId} is disconnected; its context will be retried on the next request. Details: ${String((error as Error).message)}`,
+                display: false,
+                timestamp: Date.now(),
+              },
+              ...event.messages,
+            ],
+          };
+        }
         const activeToolNames = new Set(pi.getActiveTools());
         const activeTools = pi
           .getAllTools()
@@ -78,9 +94,23 @@ export default function (pi: ExtensionAPI) {
         const text = fitEvidence(
           serializeEvidence({
             sessionId: source.sessionId,
-            messages: source.messages,
+            messages: source.entries.flatMap((entry: any) =>
+              entry.messages.map((message: any) => ({
+                ...message,
+                sourceEntryId: entry.id,
+              })),
+            ),
             systemPrompt: source.systemPrompt,
-            compactionSummaries: source.compactionSummaries,
+            compactionSummaries: [
+              ...(source.omittedCount
+                ? [
+                    `${source.omittedCount} source entries omitted by bridge size limit; use operator_read_context with an entry offset to retrieve history.`,
+                  ]
+                : []),
+              ...source.entries
+                .map((entry: any) => entry.compactionSummary)
+                .filter(Boolean),
+            ],
           }),
           budgetTokens * 4,
         );
@@ -100,20 +130,66 @@ export default function (pi: ExtensionAPI) {
       pi.registerTool({
         name: 'operator_read_context',
         label: 'Read source context',
-        description: 'Retrieve recent committed source-session messages.',
+        description:
+          'Retrieve bounded committed source-session messages by entry offset.',
         parameters: Type.Object({
           limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 200 })),
+          offset: Type.Optional(Type.Integer({ minimum: 0 })),
         }),
         async execute(_id, params) {
           const result = await bridge!.call(
             attachment!.targetSessionId,
             attachment!.targetSessionFile,
-            { action: 'history', limit: params.limit },
+            { action: 'history', limit: params.limit, offset: params.offset },
           );
           return {
-            content: [{ type: 'text', text: JSON.stringify(result.entries) }],
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  entries: result.entries,
+                  offset: result.offset,
+                  nextOffset: result.nextOffset,
+                }),
+              },
+            ],
             details: {},
           };
+        },
+      });
+      pi.registerTool({
+        name: 'operator_source_status',
+        label: 'Check source connection',
+        description:
+          'Check whether the exact attached source session is connected.',
+        parameters: Type.Object({}),
+        async execute() {
+          try {
+            await bridge!.call(
+              attachment!.targetSessionId,
+              attachment!.targetSessionFile,
+              { action: 'hello' },
+            );
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: `Connected to source session ${attachment!.targetSessionId}.`,
+                },
+              ],
+              details: {},
+            };
+          } catch (error) {
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: `Disconnected from source session ${attachment!.targetSessionId}: ${String((error as Error).message)}`,
+                },
+              ],
+              details: {},
+            };
+          }
         },
       });
       pi.registerTool({

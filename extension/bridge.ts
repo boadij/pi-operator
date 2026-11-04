@@ -163,26 +163,65 @@ export function createBridge(pi: any, ctx: any, directory = runtimeDir) {
             break;
           case 'context': {
             const projection = ctx.sessionManager.buildSessionProjection();
+            const entries: any[] = [];
+            let bytes = 0;
+            let omittedCount = 0;
+            // Bound each entry before building a response; a single oversized
+            // entry is left for the offset-based history reader.
+            for (
+              let index = projection.entries.length - 1;
+              index >= 0;
+              index--
+            ) {
+              const entry = projection.entries[index];
+              const candidate = {
+                id: entry.sourceEntry.id,
+                messages: entry.messages,
+                compactionSummary:
+                  entry.sourceEntry.type === 'compaction'
+                    ? entry.sourceEntry.summary
+                    : undefined,
+              };
+              const size = Buffer.byteLength(JSON.stringify(candidate));
+              if (bytes + size > MAX - 96_000) {
+                omittedCount++;
+                continue;
+              }
+              entries.unshift(candidate);
+              bytes += size;
+            }
             body = {
-              messages: projection.messages,
-              compactionSummaries: projection.entries
-                .map((entry: any) => entry.sourceEntry)
-                .filter((entry: any) => entry.type === 'compaction')
-                .map((entry: any) => entry.summary),
+              entries,
+              omittedCount,
               leafId: ctx.sessionManager.getLeafId(),
-              systemPrompt: ctx.getSystemPrompt(),
+              systemPrompt: String(ctx.getSystemPrompt()).slice(0, 16_000),
             };
             break;
           }
-          case 'history':
+          case 'history': {
+            const all = ctx.sessionManager.getEntries();
+            const offset = Math.max(0, Math.floor(Number(q.offset) || 0));
+            const limit = Math.min(
+              200,
+              Math.max(1, Math.floor(Number(q.limit) || 50)),
+            );
+            const page: any[] = [];
+            let bytes = 0;
+            for (const entry of all.slice(offset, offset + limit)) {
+              const safeEntry = redactHistoryEntries([entry])[0];
+              const size = Buffer.byteLength(JSON.stringify(safeEntry));
+              if (bytes + size > MAX - 4096) break;
+              page.push(safeEntry);
+              bytes += size;
+            }
             body = {
-              entries: redactHistoryEntries(
-                ctx.sessionManager
-                  .getEntries()
-                  .slice(-Math.min(200, Math.max(1, Number(q.limit) || 50))),
-              ),
+              entries: page,
+              offset,
+              nextOffset:
+                offset + page.length < all.length ? offset + page.length : null,
             };
             break;
+          }
           case 'delivery': {
             const found = ctx.sessionManager
               .getEntries()
