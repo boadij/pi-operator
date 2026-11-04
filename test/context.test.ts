@@ -64,9 +64,22 @@ test('evidence is attributed and stable; oversized evidence has a retrieval noti
   assert.match(safe, /private reasoning omitted/);
   assert.match(safe, /image content unsupported/);
   assert.doesNotMatch(safe, /secret|base64/);
-  assert.match(fitEvidence(evidence.repeat(20), 150), /operator_read_context/);
+  assert.match(fitEvidence(evidence.repeat(20), 400), /operator_read_context/);
   assert.throws(
     () => fitEvidence('too long'.repeat(100), 50),
     /Context budget too small/,
   );
+});
+
+test('an oversized source system prompt is omitted to preserve recent messages within the model budget', () => {
+  const sourcePrompt = 'source policy '.repeat(2_000);
+  const evidence = serializeEvidence({
+    sessionId: 'source-budget',
+    systemPrompt: sourcePrompt,
+    messages: [{ role: 'user', content: 'recent source marker' }],
+  });
+  const fitted = fitEvidence(evidence, 1_000);
+  assert.match(fitted, /Source system prompt omitted because it does not fit/);
+  assert.match(fitted, /recent source marker/);
+  assert.doesNotMatch(fitted, /source policy/);
 });

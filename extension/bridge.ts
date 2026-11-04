@@ -8,7 +8,7 @@ import { confirmInstruction } from './confirmation.ts';
 import { redactHistoryEntries } from './context.ts';
 
 const MAX = 1_000_000;
-const MAX_HISTORY_PART = 400_000;
+const MAX_HISTORY_PART = 20_000;
 const validId = (id: string) => /^[a-zA-Z0-9_-]{1,128}$/.test(id);
 const runtimeDir = join(homedir(), '.pi', 'operator');
 const socketFor = (id: string, directory = runtimeDir) =>

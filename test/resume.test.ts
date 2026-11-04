@@ -86,23 +86,32 @@ test('persisted Operator initializes offline and reconnects only to its saved so
   const source = createBridge(
     {},
     {
-      getSystemPrompt: () => 'source prompt',
+      getSystemPrompt: () => 'source policy '.repeat(10_000),
       sessionManager: {
         getSessionId: () => sessionId,
         getSessionFile: () => attachment.targetSessionFile,
         getLeafId: () => 'leaf',
         getEntries: () => sourceEntries,
-        buildSessionProjection: () => ({ entries: [] }),
+        buildSessionProjection: () => ({
+          entries: [
+            {
+              sourceEntry: { id: 'recent-source', type: 'message' },
+              messages: [{ role: 'user', content: 'recent source marker' }],
+            },
+          ],
+        }),
       },
     },
   );
   await source.start();
   t.after(() => source.close());
   const reconnected = await context(event, {
-    model: {},
+    model: { contextWindow: 32000 },
     getSystemPrompt: () => 'prompt',
   });
-  assert.match(reconnected.messages[0].content, /Untrusted committed evidence/);
+  assert.match(reconnected.messages[0].content, /Source system prompt omitted/);
+  assert.match(reconnected.messages[0].content, /recent source marker/);
+  assert.doesNotMatch(reconnected.messages[0].content, /source policy/);
   assert.match(reconnected.messages[0].content, new RegExp(sessionId));
   const readTool = tools.find((tool) => tool.name === 'operator_read_context');
   const skippedPage = await readTool.execute('tool-call', {
@@ -130,12 +139,23 @@ test('persisted Operator initializes offline and reconnects only to its saved so
       contentOffset,
     });
     const part = JSON.parse(result.content[0].text).part;
+    assert.ok(Buffer.byteLength(result.content[0].text) <= 50 * 1024);
     assert.equal(part.entryId, 'too-large');
     assert.equal(part.entryOffset, 0);
     assert.equal(part.contentOffset, contentOffset);
     parts.push(part.content);
-    if (part.nextContentOffset === null) break;
+    if (part.nextContentOffset === null) {
+      assert.equal(
+        contentOffset + Buffer.byteLength(part.content),
+        part.totalBytes,
+      );
+      break;
+    }
     assert.ok(part.nextContentOffset > contentOffset);
+    assert.equal(
+      part.nextContentOffset,
+      contentOffset + Buffer.byteLength(part.content),
+    );
     contentOffset = part.nextContentOffset;
   }
   assert.equal(JSON.parse(parts.join('')).id, 'too-large');

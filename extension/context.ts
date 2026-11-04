@@ -93,7 +93,9 @@ export function fitEvidence(evidence: string, maxChars: number): string {
     rows[0]?.startsWith('Native compaction summaries (quoted untrusted data):')
   )
     headerRows.push(rows.shift());
-  const header = headerRows.filter(Boolean).join('\n');
+  const sourcePromptIndex = headerRows.findIndex((row) =>
+    row?.startsWith('Source system prompt (quoted untrusted data):'),
+  );
   const turns: string[][] = [];
   let turn: string[] = [];
   for (const row of rows) {
@@ -104,22 +106,42 @@ export function fitEvidence(evidence: string, maxChars: number): string {
     turn.push(row);
   }
   if (turn.length) turns.push(turn);
-  const kept: string[][] = [];
-  let used = estimateTokens(message(header) as never);
   const notice =
     '[Earlier source turns omitted; use operator_read_context to retrieve history.]';
-  for (const block of turns.reverse()) {
-    const cost = block.reduce(
-      (sum, row) => sum + estimateTokens(message(row) as never),
-      0,
-    );
-    if (used + cost > budget) break;
-    kept.unshift(block);
-    used += cost;
+  const fitWithHeader = (
+    header: string,
+    promptNotice = '',
+  ): string | undefined => {
+    const prefix = [header, promptNotice, notice].filter(Boolean).join('\n');
+    let used = estimateTokens(message(prefix) as never);
+    if (used > budget) return;
+    const kept: string[][] = [];
+    for (const block of [...turns].reverse()) {
+      const cost = block.reduce(
+        (sum, row) => sum + estimateTokens(message(row) as never),
+        0,
+      );
+      if (used + cost > budget) break;
+      kept.unshift(block);
+      used += cost;
+    }
+    if (!kept.length) return;
+    return `${prefix}\n${kept.flat().join('\n')}`;
+  };
+  const completeHeader = headerRows.filter(Boolean).join('\n');
+  const withPrompt = fitWithHeader(completeHeader);
+  if (withPrompt) return withPrompt;
+  if (sourcePromptIndex >= 0) {
+    const withoutPrompt = headerRows
+      .filter((_, index) => index !== sourcePromptIndex)
+      .filter(Boolean)
+      .join('\n');
+    const promptNotice =
+      '[Source system prompt omitted because it does not fit the remaining Operator context budget.]';
+    const recentEvidence = fitWithHeader(withoutPrompt, promptNotice);
+    if (recentEvidence) return recentEvidence;
   }
-  if (!kept.length)
-    throw new Error(
-      'Context budget too small to include a complete source message. Increase the model context or shorten this conversation.',
-    );
-  return `${header}\n${notice}\n${kept.flat().join('\n')}`;
+  throw new Error(
+    'Context budget too small to include a complete source message. Increase the model context or shorten this conversation.',
+  );
 }
