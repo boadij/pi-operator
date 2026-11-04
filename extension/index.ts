@@ -14,6 +14,42 @@ import { launch } from './launch.ts';
 const ATTACHMENT = 'pi-operator-attachment';
 const FLAG = 'operator-target';
 
+export function formatHistoryResult(
+  result: any,
+  requestedOffset: number,
+): string {
+  const entries = Array.isArray(result.entries) ? result.entries : [];
+  const skippedEntries = Array.isArray(result.skippedEntries)
+    ? result.skippedEntries
+    : [];
+  let nextOffset = result.nextOffset;
+  let warning: string | undefined;
+  if (
+    entries.length === 0 &&
+    Number.isInteger(nextOffset) &&
+    nextOffset <= requestedOffset
+  ) {
+    skippedEntries.push({
+      id: null,
+      reason:
+        'Legacy source bridge returned an empty page without advancing; this entry was not retrieved.',
+    });
+    nextOffset = requestedOffset + 1;
+    warning =
+      'The source bridge is an older version and could not return the entry at this offset. It was not retrieved; continuing at nextOffset skips it.';
+  } else if (skippedEntries.length) {
+    warning =
+      'Some entries were skipped because they exceed the response budget; their contents were not retrieved. Continue at nextOffset for later entries.';
+  }
+  return JSON.stringify({
+    entries,
+    skippedEntries,
+    offset: result.offset,
+    nextOffset,
+    warning,
+  });
+}
+
 export default function (pi: ExtensionAPI) {
   let bridge: ReturnType<typeof createBridge> | undefined;
   let attachment:
@@ -146,15 +182,7 @@ export default function (pi: ExtensionAPI) {
             content: [
               {
                 type: 'text',
-                text: JSON.stringify({
-                  entries: result.entries,
-                  skippedEntries: result.skippedEntries,
-                  offset: result.offset,
-                  nextOffset: result.nextOffset,
-                  warning: result.skippedEntries.length
-                    ? 'Some entries were skipped because they exceed the response budget; their contents were not retrieved. Continue at nextOffset for later entries.'
-                    : undefined,
-                }),
+                text: formatHistoryResult(result, params.offset ?? 0),
               },
             ],
             details: {},

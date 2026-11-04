@@ -1,7 +1,27 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import extension from '../extension/index.ts';
+import extension, { formatHistoryResult } from '../extension/index.ts';
 import { createBridge } from '../extension/bridge.ts';
+
+test('history tool accepts legacy responses and reports a stalled legacy page', () => {
+  const compatible = JSON.parse(
+    formatHistoryResult(
+      { entries: [{ id: 'legacy-entry' }], offset: 5, nextOffset: 6 },
+      5,
+    ),
+  );
+  assert.equal(compatible.entries[0].id, 'legacy-entry');
+  assert.deepEqual(compatible.skippedEntries, []);
+  assert.equal(compatible.warning, undefined);
+
+  const stalled = JSON.parse(
+    formatHistoryResult({ entries: [], offset: 5, nextOffset: 5 }, 5),
+  );
+  assert.equal(stalled.skippedEntries[0].id, null);
+  assert.match(stalled.skippedEntries[0].reason, /not retrieved/);
+  assert.equal(stalled.nextOffset, 6);
+  assert.match(stalled.warning, /older version.*not retrieved/);
+});
 
 test('persisted Operator initializes offline and reconnects only to its saved source', async (t) => {
   const handlers = new Map<string, (...args: any[]) => any>();
