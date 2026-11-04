@@ -71,6 +71,7 @@ test('history rendering summarizes pagination, omission, continuation, partial a
 test('persisted Operator initializes offline and reconnects only to its saved source', async (t) => {
   const handlers = new Map<string, (...args: any[]) => any>();
   const tools: any[] = [];
+  const commands: string[] = [];
   const sessionId = `resume-${process.pid}`;
   const sourceEntries = [
     {
@@ -109,7 +110,7 @@ test('persisted Operator initializes offline and reconnects only to its saved so
     on: (name: string, handler: (...args: any[]) => any) =>
       handlers.set(name, handler),
     registerTool: (tool: any) => tools.push(tool),
-    registerCommand() {},
+    registerCommand: (name: string) => commands.push(name),
     getActiveTools: () => [],
     getAllTools: () => [],
     appendEntry() {
@@ -120,6 +121,7 @@ test('persisted Operator initializes offline and reconnects only to its saved so
   await handlers.get('session_start')!({}, ctx);
   assert.ok(tools.some((tool) => tool.name === 'operator_read_context'));
   assert.ok(tools.some((tool) => tool.name === 'operator_source_status'));
+  assert.ok(commands.includes('operator-pair'));
   const context = handlers.get('context')!;
   const event = { messages: [{ role: 'user', content: 'hello' }] };
   const disconnected = await context(event, {

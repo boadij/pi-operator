@@ -62,6 +62,7 @@ class RpcPi {
   private sequence = 0;
   private confirmationCount = 0;
   private stderr = '';
+  inputValue = '';
 
   constructor(
     args: string[],
@@ -88,6 +89,16 @@ class RpcPi {
             type: 'extension_ui_response',
             id: record.id,
             confirmed: true,
+          });
+        }
+        if (
+          record.type === 'extension_ui_request' &&
+          record.method === 'input'
+        ) {
+          this.send({
+            type: 'extension_ui_response',
+            id: record.id,
+            value: this.inputValue,
           });
         }
         for (const waiter of this.waiters) {
@@ -276,6 +287,7 @@ test(
         ...process.env,
         HOME: home,
         PI_OPERATOR_FAUX_LOG: join(home, `${name}.log`),
+        PI_OPERATOR_TEST_PAIRING: '1',
         ...envExtra,
       });
     const source = session('source', [], {
@@ -290,9 +302,35 @@ test(
       await source.stop();
     });
 
+    const noHook = session('no-hook', [], { PI_OPERATOR_TEST_PAIRING: '' });
+    await noHook.command('get_commands');
+    assert.equal(
+      noHook
+        .eventsSince(0)
+        .some(
+          (event) =>
+            event.type === 'extension_ui_request' &&
+            event.method === 'notify' &&
+            /pairing/i.test(event.message),
+        ),
+      false,
+      'pairing test hook must be unavailable without its explicit flag',
+    );
+    await noHook.stop();
+
     const sourceState = await source.start();
     const sourceId = sourceState.sessionId as string;
     await source.promptAndWait('Source notes: PI_OPERATOR_MARKER_ALPHA');
+    const pairingNotice = await source.waitFor(
+      (item) =>
+        item.type === 'extension_ui_request' &&
+        item.method === 'notify' &&
+        item.message.includes('One-time Operator pairing code'),
+    );
+    const pairingCode = pairingNotice.message.match(
+      /code .*: ([a-zA-Z0-9_-]+)/,
+    )?.[1];
+    assert.ok(pairingCode, 'source should display a one-time pairing code');
 
     operator = session('operator', [
       '--system-prompt',
@@ -300,7 +338,16 @@ test(
       '--operator-target',
       sourceId,
     ]);
+    operator.inputValue = pairingCode;
+    const operatorPairingStart = operator.lastSequence;
     await operator.start();
+    await operator.waitFor(
+      (item) =>
+        item.type === 'extension_ui_request' &&
+        item.method === 'notify' &&
+        item.message === 'Operator paired.',
+      operatorPairingStart,
+    );
     const answer1 = await operator.promptAndWait('ASK_SOURCE_MARKER');
     assert.match(
       JSON.stringify(answer1),
@@ -331,7 +378,7 @@ test(
       /PI_OPERATOR_INTEGRATION_DELIVERY/,
     );
     assert.equal(operator.confirmations, 1);
-    assert.equal(source.confirmations, 1);
+    assert.equal(source.confirmations, 0);
     assert.equal(
       source
         .eventsSince(busyStart)

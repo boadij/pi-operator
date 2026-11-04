@@ -97,36 +97,39 @@ export default function (pi: ExtensionAPI) {
         targetSessionFile: saved?.targetSessionFile ?? null,
       };
       bridge = createBridge(pi, ctx);
-      {
+      if (!saved) {
         const hello = await bridge.call(target, attachment.targetSessionFile, {
           action: 'hello',
         });
         attachment.targetSessionFile = hello.sessionFile;
-        if (!saved) pi.appendEntry(ATTACHMENT, { version: 1, ...attachment });
+        pi.appendEntry(ATTACHMENT, { version: 1, ...attachment });
       }
+      const pair = async (_args: string, commandCtx: any) => {
+        const code = await commandCtx.ui.input(
+          'Enter the one-time pairing code shown in the source session:',
+        );
+        if (!code) return;
+        try {
+          const pairing = await bridge!.call(
+            attachment!.targetSessionId,
+            attachment!.targetSessionFile,
+            { action: 'pair', code },
+          );
+          bridge!.authorize(pairing.capability);
+          commandCtx.ui.notify('Operator paired.', 'info');
+        } catch (error) {
+          commandCtx.ui.notify(
+            `Pairing failed: ${String((error as Error).message)}`,
+            'error',
+          );
+        }
+      };
       pi.registerCommand('operator-pair', {
         description: 'Pair this Operator with its attached source session',
-        handler: async (_args, commandCtx) => {
-          const code = await (commandCtx as any).ui.input(
-            'Enter the one-time pairing code shown in the source session:',
-          );
-          if (!code) return;
-          try {
-            const pairing = await bridge!.call(
-              attachment!.targetSessionId,
-              attachment!.targetSessionFile,
-              { action: 'pair', code },
-            );
-            bridge!.authorize(pairing.capability);
-            (commandCtx as any).ui.notify('Operator paired.', 'info');
-          } catch (error) {
-            (commandCtx as any).ui.notify(
-              `Pairing failed: ${String((error as Error).message)}`,
-              'error',
-            );
-          }
-        },
+        handler: pair,
       });
+      if (process.env.PI_OPERATOR_TEST_PAIRING === '1')
+        queueMicrotask(() => void pair('', ctx));
       pi.on('context', async (event: any, context: any) => {
         let source: any;
         try {
@@ -372,16 +375,19 @@ export default function (pi: ExtensionAPI) {
     }
     bridge = createBridge(pi, ctx);
     await bridge.start();
+    const pair = async (_args: string, commandCtx: any) => {
+      const code = bridge!.createPairingCode();
+      commandCtx.ui.notify(
+        `One-time Operator pairing code (expires in 2 minutes): ${code}`,
+        'warning',
+      );
+    };
     pi.registerCommand('operator-pair', {
       description: 'Start one-time pairing with an attached Operator',
-      handler: async (_args, commandCtx) => {
-        const code = bridge!.createPairingCode();
-        (commandCtx as any).ui.notify(
-          `One-time Operator pairing code (expires in 2 minutes): ${code}`,
-          'warning',
-        );
-      },
+      handler: pair,
     });
+    if (process.env.PI_OPERATOR_TEST_PAIRING === '1')
+      queueMicrotask(() => void pair('', ctx));
     pi.registerCommand('operator', {
       description: 'Open an attached Pi Operator conversation',
       handler: async (_args, commandCtx) => {

@@ -150,7 +150,7 @@ test('bridge binds exact session identity, projects context, and queues sends as
       message: 'changed',
       requestId: 'request-1',
     }),
-    /Unauthorized/,
+    /Replayed or invalid instruction request/,
   );
   entries.push({
     id: 'sent',

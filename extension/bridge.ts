@@ -32,6 +32,7 @@ export function createBridge(pi: any, ctx: any, directory = runtimeDir) {
   let ownedSocket: { dev: number; ino: number } | undefined;
   let capability: string | undefined;
   let pairingCode: { value: string; expires: number } | undefined;
+  let pairingCapability: string | undefined;
   const submitted = new Map<string, string>();
   return {
     path,
@@ -444,7 +445,6 @@ export function createBridge(pi: any, ctx: any, directory = runtimeDir) {
       }
     });
   }
-  let pairingCapability: string | undefined;
   function validAuthorization(q: any) {
     if (
       !pairingCapability ||
