@@ -1,0 +1,97 @@
+name: PR preview
+on:
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Open same-repository PR number
+        required: true
+        type: string
+  pull_request:
+    types: [closed]
+permissions: {}
+jobs:
+  build:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      sha: ${{ steps.verify.outputs.sha }}
+    steps:
+      - id: verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ inputs.pr }}
+          REPO: ${{ github.repository }}
+        run: |
+          json=$(gh api "repos/$REPO/pulls/$PR")
+          test "$(jq -r '.state' <<<"$json")" = open
+          test "$(jq -r '.head.repo.full_name' <<<"$json")" = "$REPO"
+          sha=$(jq -r '.head.sha' <<<"$json")
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.verify.outputs.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci && npm run release:check
+      - env:
+          PR: ${{ inputs.pr }}
+          SHA: ${{ steps.verify.outputs.sha }}
+        run: |
+          npm version "0.0.0-pr.${PR}.g${SHA::7}" --no-git-tag-version
+          npm pack --pack-destination "$RUNNER_TEMP"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-preview
+          path: ${{ runner.temp }}/*.tgz
+          if-no-files-found: error
+  publish:
+    if: github.event_name == 'workflow_dispatch'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm-preview
+          path: package
+      - name: Revalidate PR head before publishing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ inputs.pr }}
+          REPO: ${{ github.repository }}
+          EXPECTED_SHA: ${{ needs.build.outputs.sha }}
+        run: |
+          json=$(gh api "repos/$REPO/pulls/$PR")
+          test "$(jq -r '.state' <<<"$json")" = open
+          test "$(jq -r '.head.repo.full_name' <<<"$json")" = "$REPO"
+          test "$(jq -r '.head.sha' <<<"$json")" = "$EXPECTED_SHA"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - run: npm install --global npm@11.5.1
+      - env:
+          PR: ${{ inputs.pr }}
+        run: npm publish package/*.tgz --tag "pr-${PR}" --provenance --access public
+  cleanup:
+    if: github.event_name == 'pull_request' && github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - env:
+          PR: ${{ github.event.pull_request.number }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm dist-tag rm pi-operator "pr-${PR}" --registry https://registry.npmjs.org
