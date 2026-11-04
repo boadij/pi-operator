@@ -1,6 +1,6 @@
 {
   "name": "pi-operator",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "description": "A separate, attached conversation for a busy Pi session",
   "type": "module",
   "license": "Apache-2.0",
